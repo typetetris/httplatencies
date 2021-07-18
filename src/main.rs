@@ -1,11 +1,12 @@
+use crate::headers::{cycle_headers, HeaderNamePathPair, HeaderValues};
 use histogram::Histogram;
 use reqwest::{Client, StatusCode};
-use std::io::{Write, stdout};
+use std::io::{stdout, Write};
+use std::iter::repeat;
 use std::net;
 use std::result::Result;
 use structopt::StructOpt;
 use tokio::{sync, time};
-use crate::headers::{HeaderValues, HeaderNamePathPair, cycle_headers};
 
 mod headers;
 
@@ -90,12 +91,11 @@ async fn main() -> Result<(), String> {
         }
         clients
     };
-    let header_values = first_error_or_values(
-        opt.headers_from_file
-            .into_iter()
-            .map(HeaderValues::new)
-            .collect(),
-    )?;
+    let header_values = opt
+        .headers_from_file
+        .into_iter()
+        .map(HeaderValues::new)
+        .collect::<Result<Vec<HeaderValues>, String>>()?;
     type TRPair = (
         sync::mpsc::UnboundedSender<Result<StatsData, String>>,
         sync::mpsc::UnboundedReceiver<Result<StatsData, String>>,
@@ -109,24 +109,18 @@ async fn main() -> Result<(), String> {
         jitter.subsec_millis()
     );
     let probe_count = opt.probe_count;
-    for (((task_number, url), client), headers) in (0..opt.task_count)
-        .zip(opt.urls.iter().cycle())
-        .zip(clients.iter().cycle())
+    for ((((task_number, url), client), headers), sender) in (0..opt.task_count)
+        .zip(opt.urls.into_iter().cycle())
+        .zip(clients.into_iter().cycle())
         .zip(cycle_headers(&header_values[..]))
+        .zip(repeat(sender))
     {
-        let url = url.clone();
-        let client = client.clone();
-        let headers = headers.clone();
-        let sender = sender.clone();
-
         tokio::spawn(async move {
             take_measurments(task_number, client, url, probe_count, sender, headers).await
         });
 
         time::sleep(jitter).await;
     }
-
-    drop(sender);
 
     println!();
 
@@ -138,18 +132,16 @@ async fn main() -> Result<(), String> {
             stdout().flush().unwrap();
         }
         match stats {
-            Ok(stats) => {
-                match stats.duration {
-                    Ok(dur) => {
-                        let value = dur.as_secs() * 1000 + (dur.subsec_millis() as u64);
-                        histogram.increment(value).unwrap();
-                    }
-                    Err(err) => {
-                        println!("{} ERROR {}", stats.task_number, err);
-                        println!();
-                    }
+            Ok(stats) => match stats.duration {
+                Ok(dur) => {
+                    let value = dur.as_secs() * 1000 + (dur.subsec_millis() as u64);
+                    histogram.increment(value).unwrap();
                 }
-            }
+                Err(err) => {
+                    println!("{} ERROR {}", stats.task_number, err);
+                    println!();
+                }
+            },
             Err(err) => {
                 println!("ERROR: {}", err);
                 println!();
@@ -215,17 +207,3 @@ async fn take_measurments(
         time::sleep(time::Duration::from_secs(1)).await;
     }
 }
-
-fn first_error_or_values(
-    input: Vec<Result<HeaderValues, String>>,
-) -> Result<Vec<HeaderValues>, String> {
-    let mut result = Vec::new();
-    for elem in input {
-        match elem {
-            Ok(val) => result.push(val),
-            Err(err) => return Err(err),
-        }
-    }
-    Ok(result)
-}
-
