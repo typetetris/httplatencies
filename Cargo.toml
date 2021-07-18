@@ -1,0 +1,17 @@
+[package]
+name = "httplatencies"
+version = "1.0.0"
+authors = ["Eric Wolf <ericwolf42@gmail.com>"]
+edition = "2018"
+description = "Send many request to an http endpoint and measure latencies"
+readme = "README.md"
+homepage = "https://github.com/typetetris/httplatencies"
+repository = "https://github.com/typetetris/httplatencies" 
+license = "MIT"
+
+[dependencies]
+reqwest = { version = "0.11", features = ["cookies"] }
+tokio = { version = "1", features = ["full"] }
+serde_json = "1.0"
+histogram = "0.6"
+structopt = "0.3"
