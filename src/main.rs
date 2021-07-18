@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use crate::headers::{cycle_headers, HeaderNamePathPair, HeaderValues};
 use histogram::Histogram;
 use reqwest::{Client, StatusCode};
@@ -103,23 +104,18 @@ async fn main() -> Result<(), String> {
     let (sender, mut receiver): TRPair = sync::mpsc::unbounded_channel();
 
     let jitter = time::Duration::from_secs(1) / opt.task_count;
-    println!(
-        "jitter per conference sec: {} millisec: {}",
-        jitter.as_secs(),
-        jitter.subsec_millis()
-    );
     let probe_count = opt.probe_count;
-    for ((((task_number, url), client), headers), sender) in (0..opt.task_count)
+    let barrier = Arc::new(sync::Barrier::new(opt.task_count as usize));
+    for (((((task_number, url), client), headers), sender), barrier) in (0..opt.task_count)
         .zip(opt.urls.into_iter().cycle())
         .zip(clients.into_iter().cycle())
         .zip(cycle_headers(&header_values[..]))
         .zip(repeat(sender))
+        .zip(repeat(barrier))
     {
         tokio::spawn(async move {
-            take_measurments(task_number, client, url, probe_count, sender, headers).await
+            take_measurments(task_number, client, url, probe_count, sender, headers, jitter * task_number, barrier).await
         });
-
-        time::sleep(jitter).await;
     }
 
     println!();
@@ -171,7 +167,11 @@ async fn take_measurments(
     probe_count: u32,
     sender: sync::mpsc::UnboundedSender<Result<StatsData, String>>,
     headers: reqwest::header::HeaderMap,
+    jitter: time::Duration,
+    barrier: Arc<sync::Barrier>,
 ) {
+    barrier.wait().await;
+    time::sleep(jitter).await;
     for _ in 0..probe_count {
         let now = time::Instant::now();
         let res = client
