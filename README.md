@@ -38,6 +38,8 @@ Have fun.
                 For example "Authorization" header with lines of the form "Bearer somenthing" in the given file.
                 
                 The files will be complete read, so shorten them if you run in memory problems.
+
+                Example: -h Authorization:/tmp/auth-tokens.txt
         -l, --local-ips <local-ips>...                    
                 local IPs to use for the http clients
     
