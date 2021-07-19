@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use crate::headers::{cycle_headers, HeaderNamePathPair, HeaderValues};
 use histogram::Histogram;
 use reqwest::{Client, StatusCode};
@@ -6,6 +5,7 @@ use std::io::{stdout, Write};
 use std::iter::repeat;
 use std::net;
 use std::result::Result;
+use std::sync::Arc;
 use structopt::StructOpt;
 use tokio::{sync, time};
 
@@ -70,7 +70,7 @@ struct Opt {
 #[derive(Debug)]
 struct StatsData {
     task_number: u32,
-    duration: Result<time::Duration, String>,
+    duration: Vec<Result<time::Duration, String>>,
 }
 
 #[tokio::main]
@@ -98,8 +98,8 @@ async fn main() -> Result<(), String> {
         .map(HeaderValues::new)
         .collect::<Result<Vec<HeaderValues>, String>>()?;
     type TRPair = (
-        sync::mpsc::UnboundedSender<Result<StatsData, String>>,
-        sync::mpsc::UnboundedReceiver<Result<StatsData, String>>,
+        sync::mpsc::UnboundedSender<StatsData>,
+        sync::mpsc::UnboundedReceiver<StatsData>,
     );
     let (sender, mut receiver): TRPair = sync::mpsc::unbounded_channel();
 
@@ -114,7 +114,17 @@ async fn main() -> Result<(), String> {
         .zip(repeat(barrier))
     {
         tokio::spawn(async move {
-            take_measurments(task_number, client, url, probe_count, sender, headers, jitter * task_number, barrier).await
+            take_measurments(
+                task_number,
+                client,
+                url,
+                probe_count,
+                sender,
+                headers,
+                jitter * task_number,
+                barrier,
+            )
+            .await
         });
     }
 
@@ -127,8 +137,8 @@ async fn main() -> Result<(), String> {
             print!("\x1B[`\x1B[K{}/{}", histogram.entries(), maxcount);
             stdout().flush().unwrap();
         }
-        match stats {
-            Ok(stats) => match stats.duration {
+        for stat in stats.duration {
+            match stat {
                 Ok(dur) => {
                     let value = dur.as_secs() * 1000 + (dur.subsec_millis() as u64);
                     histogram.increment(value).unwrap();
@@ -137,10 +147,6 @@ async fn main() -> Result<(), String> {
                     println!("{} ERROR {}", stats.task_number, err);
                     println!();
                 }
-            },
-            Err(err) => {
-                println!("ERROR: {}", err);
-                println!();
             }
         }
     }
@@ -165,13 +171,14 @@ async fn take_measurments(
     client: Client,
     url: reqwest::Url,
     probe_count: u32,
-    sender: sync::mpsc::UnboundedSender<Result<StatsData, String>>,
+    sender: sync::mpsc::UnboundedSender<StatsData>,
     headers: reqwest::header::HeaderMap,
     jitter: time::Duration,
     barrier: Arc<sync::Barrier>,
 ) {
     barrier.wait().await;
     time::sleep(jitter).await;
+    let mut data = Vec::new();
     for _ in 0..probe_count {
         let now = time::Instant::now();
         let res = client
@@ -183,27 +190,38 @@ async fn take_measurments(
             Ok(result) => {
                 if result.status() == StatusCode::OK {
                     let duration = now.elapsed();
-                    sender
-                        .send(Ok(StatsData {
-                            task_number,
-                            duration: Ok(duration),
-                        }))
-                        .unwrap();
+                    data.push(Ok(duration));
                 } else {
-                    sender
-                        .send(Err(format!(
-                            "status code not OK: {} body: {}",
-                            result.status(),
-                            result.text().await.unwrap()
-                        )))
-                        .unwrap();
+                    data.push(Err(format!(
+                        "status code not OK: {} body: {}",
+                        result.status(),
+                        result.text().await.unwrap()
+                    )));
                 }
             }
             Err(err) => {
-                sender.send(Err(format!("{}", err))).unwrap();
+                data.push(Err(format!("{}", err)));
                 break;
             }
         }
+        if data.len() % 10 == 0 {
+            sender
+                .send(StatsData {
+                    task_number,
+                    duration: data,
+                })
+                .unwrap();
+            data = Vec::new();
+        }
         time::sleep(time::Duration::from_secs(1)).await;
+    }
+
+    if !data.is_empty() {
+        sender
+            .send(StatsData {
+                task_number,
+                duration: data,
+            })
+            .unwrap();
     }
 }
