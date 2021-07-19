@@ -1,3 +1,4 @@
+use std::cmp::max;
 use crate::headers::{cycle_headers, HeaderNamePathPair, HeaderValues};
 use histogram::Histogram;
 use reqwest::{Client, StatusCode};
@@ -65,6 +66,11 @@ struct Opt {
     /// Example: -h Authorization:/tmp/auth-tokens.txt
     #[structopt(short, long, parse(try_from_os_str = HeaderNamePathPair::try_from_os_string))]
     headers_from_file: Vec<HeaderNamePathPair>,
+
+    /// Use that many http client object. Defaults to the
+    /// number of local IPs.
+    #[structopt(short, long)]
+    clients: Option<usize>,
 }
 
 #[derive(Debug)]
@@ -81,17 +87,27 @@ async fn main() -> Result<(), String> {
             .danger_accept_invalid_certs(true)
             .timeout(time::Duration::from_secs(30))
     };
+
     let clients = {
-        let mut clients: Vec<reqwest::Client> = opt
-            .local_ips
-            .iter()
-            .map(|ip| client_builder().local_address(Some(*ip)).build().unwrap())
-            .collect();
-        if clients.is_empty() {
-            clients.push(client_builder().build().unwrap());
+        let mut clients = Vec::new();
+        let client_count = max(1, opt.clients.unwrap_or(opt.local_ips.len()));
+        if opt.local_ips.is_empty() {
+            for _ in 0..client_count {
+                clients.push(client_builder().build().unwrap());
+            }
+        } else {
+            for (_, local_ip) in (0..client_count).zip(opt.local_ips.into_iter().cycle()) {
+                clients.push(
+                    client_builder()
+                        .local_address(Some(local_ip))
+                        .build()
+                        .unwrap(),
+                );
+            }
         }
         clients
     };
+
     let header_values = opt
         .headers_from_file
         .into_iter()
