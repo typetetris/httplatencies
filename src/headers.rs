@@ -5,7 +5,7 @@ use std::io::{BufRead, BufReader};
 use std::os::unix::prelude::OsStringExt;
 use std::path::PathBuf;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct HeaderNamePathPair {
     name: HeaderName,
     path: PathBuf,

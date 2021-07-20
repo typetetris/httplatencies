@@ -2,17 +2,17 @@ use std::cmp::max;
 use crate::headers::{cycle_headers, HeaderNamePathPair, HeaderValues};
 use histogram::Histogram;
 use reqwest::{Client, StatusCode};
-use std::io::{stdout, Write};
 use std::iter::repeat;
 use std::net;
 use std::result::Result;
 use std::sync::Arc;
 use structopt::StructOpt;
 use tokio::{sync, time};
+use std::thread;
 
 mod headers;
 
-#[derive(StructOpt, Debug)]
+#[derive(StructOpt, Debug, Clone)]
 #[structopt()]
 /// bombard endpoints with many get requests
 ///
@@ -71,6 +71,10 @@ struct Opt {
     /// number of local IPs.
     #[structopt(short, long)]
     clients: Option<usize>,
+
+    /// Use that many current thread tokio runtimes.
+    #[structopt(short, long)]
+    runtime_count: u32,
 }
 
 #[derive(Debug)]
@@ -79,9 +83,40 @@ struct StatsData {
     duration: Vec<Result<time::Duration, String>>,
 }
 
-#[tokio::main]
-async fn main() -> Result<(), String> {
+fn main() -> Result<(), String> {
     let opt = Opt::from_args();
+    let (tx, rx): (std::sync::mpsc::Sender<Histogram>, std::sync::mpsc::Receiver<Histogram>) = std::sync::mpsc::channel();
+    for ((_, tx), opt) in (0..opt.runtime_count).zip(repeat(tx)).zip(repeat(opt)) {
+        thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let histogram = rt.block_on(async move {
+                thread_main(opt).await
+            });
+            tx.send(histogram).unwrap()
+        });
+    }
+    let mut histogram = Histogram::new();
+    while let Ok(hist) = rx.recv() {
+        histogram.merge(&hist);
+    }
+    println!(
+        "min: {}, max: {}, mean: {}, std. deviation: {}, quartiles: {} {} {} {}",
+        histogram.minimum().unwrap(),
+        histogram.maximum().unwrap(),
+        histogram.mean().unwrap(),
+        histogram.stddev().unwrap(),
+        histogram.percentile(25.0).unwrap(),
+        histogram.percentile(50.0).unwrap(),
+        histogram.percentile(75.0).unwrap(),
+        histogram.percentile(95.0).unwrap()
+    );
+    Ok(())
+}
+
+async fn thread_main(opt: Opt) -> Histogram {
     let client_builder = || {
         reqwest::ClientBuilder::new()
             .danger_accept_invalid_certs(true)
@@ -112,7 +147,7 @@ async fn main() -> Result<(), String> {
         .headers_from_file
         .into_iter()
         .map(HeaderValues::new)
-        .collect::<Result<Vec<HeaderValues>, String>>()?;
+        .collect::<Result<Vec<HeaderValues>, String>>().unwrap();
     type TRPair = (
         sync::mpsc::UnboundedSender<StatsData>,
         sync::mpsc::UnboundedReceiver<StatsData>,
@@ -144,15 +179,8 @@ async fn main() -> Result<(), String> {
         });
     }
 
-    println!();
-
     let mut histogram = Histogram::new();
-    let maxcount = opt.task_count * opt.probe_count;
     while let Some(stats) = receiver.recv().await {
-        if histogram.entries() % 100 == 0 {
-            print!("\x1B[`\x1B[K{}/{}", histogram.entries(), maxcount);
-            stdout().flush().unwrap();
-        }
         for stat in stats.duration {
             match stat {
                 Ok(dur) => {
@@ -166,20 +194,7 @@ async fn main() -> Result<(), String> {
             }
         }
     }
-    println!();
-
-    println!(
-        "min: {}, max: {}, mean: {}, std. deviation: {}, quartiles: {} {} {} {}",
-        histogram.minimum().unwrap(),
-        histogram.maximum().unwrap(),
-        histogram.mean().unwrap(),
-        histogram.stddev().unwrap(),
-        histogram.percentile(25.0).unwrap(),
-        histogram.percentile(50.0).unwrap(),
-        histogram.percentile(75.0).unwrap(),
-        histogram.percentile(95.0).unwrap()
-    );
-    Ok(())
+    histogram
 }
 
 async fn take_measurments(
