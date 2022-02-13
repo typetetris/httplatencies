@@ -4,6 +4,8 @@ I needed to measure latencies for an endpoint and I could have used [wrk](https:
 know NIH. And also I wanted to do a little [rust](https://rust-lang.org). So I created a little one-shot tool
 and later polished it a bit up for this.
 
+This measurement tool has the problem of [coordinated omission](https://www.youtube.com/watch?v=lJ8ydIuPFeU).
+
 Have fun.
 
     httplatencies 1.0.0
