@@ -156,7 +156,7 @@ async fn main() -> Result<(), String> {
         for stat in stats.duration {
             match stat {
                 Ok(dur) => {
-                    let value = dur.as_secs() * 1000 + (dur.subsec_millis() as u64);
+                    let value = (dur.as_secs_f32() * 1000f32) as u64;
                     histogram.increment(value).unwrap();
                 }
                 Err(err) => {
@@ -202,7 +202,21 @@ async fn take_measurments(
     for i in 0..probe_count {
         let estimated_start_time = start_time + time::Duration::from_secs(i as u64);
         let now = time::Instant::now();
+
+        let sleep_time = estimated_start_time.saturating_duration_since(now);
+        time::sleep(sleep_time).await;
+
+        let request_start_time = time::Instant::now();
         let avoid_coordinated_omission = now.saturating_duration_since(estimated_start_time);
+
+        eprintln!("task: {:>4} ESTART: {:>3} LOOPSTART: {:>8.4} START: {:>8.4} AVOID: {:>8.4} SLEEP: {:>8.4}",
+                  task_number,
+                  i,
+                  now.saturating_duration_since(start_time).as_secs_f32(),
+                  request_start_time.saturating_duration_since(start_time).as_secs_f32(),
+                  avoid_coordinated_omission.as_secs_f32(),
+                  sleep_time.as_secs_f32());
+
         let res = client
             .get(url.clone())
             .headers(headers.clone())
@@ -211,7 +225,7 @@ async fn take_measurments(
         match res {
             Ok(result) => {
                 if result.status() == StatusCode::OK {
-                    let duration = now.elapsed() + avoid_coordinated_omission;
+                    let duration = request_start_time.elapsed() + avoid_coordinated_omission;
                     data.push(Ok(duration));
                 } else {
                     data.push(Err(format!(
@@ -235,7 +249,6 @@ async fn take_measurments(
                 .unwrap();
             data = Vec::new();
         }
-        time::sleep(time::Duration::from_secs(1)).await;
     }
 
     if !data.is_empty() {
