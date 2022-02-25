@@ -192,11 +192,17 @@ async fn take_measurments(
     jitter: time::Duration,
     barrier: Arc<sync::Barrier>,
 ) {
+    let mut data = Vec::new();
+    // estimate expected send times for probes
     barrier.wait().await;
     time::sleep(jitter).await;
-    let mut data = Vec::new();
-    for _ in 0..probe_count {
+
+    let start_time = time::Instant::now();
+
+    for i in 0..probe_count {
+        let estimated_start_time = start_time + time::Duration::from_secs(i as u64);
         let now = time::Instant::now();
+        let avoid_coordinated_omission = now.saturating_duration_since(estimated_start_time);
         let res = client
             .get(url.clone())
             .headers(headers.clone())
@@ -205,7 +211,7 @@ async fn take_measurments(
         match res {
             Ok(result) => {
                 if result.status() == StatusCode::OK {
-                    let duration = now.elapsed();
+                    let duration = now.elapsed() + avoid_coordinated_omission;
                     data.push(Ok(duration));
                 } else {
                     data.push(Err(format!(
